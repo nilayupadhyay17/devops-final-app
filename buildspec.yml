@@ -4,27 +4,52 @@ phases:
   pre_build:
     commands:
       - echo Logging in to Amazon ECR...
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPOSITORY_URI
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/wild-rydes-app
       - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
       - IMAGE_TAG=${COMMIT_HASH:=latest}
-      - echo Build started on `date`
+      - echo Building the Docker image...
+  
   build:
     commands:
       - echo Building the Docker image...
-      - docker build -t $ECR_REPOSITORY_URI:latest .
-      - docker tag $ECR_REPOSITORY_URI:latest $ECR_REPOSITORY_URI:$IMAGE_TAG
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  
   post_build:
     commands:
-      - echo Pushing the Docker images...
-      - docker push $ECR_REPOSITORY_URI:latest
-      - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
+      - echo Pushing the Docker image...
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
       - echo Writing image definitions file...
-      - aws ecs describe-task-definition --task-definition wild-rydes-task --query taskDefinition > taskdef.json
-      - echo "[{\"name\":\"wild-rydes-container\",\"imageUri\":\"$ECR_REPOSITORY_URI:$IMAGE_TAG\"}]" > imageDefinition.json
-      - cat imageDefinition.json
+      - aws ecs describe-task-definition --task-definition WildRydesAppTask --query taskDefinition > taskdef.json
+      - jq '.containerDefinitions[0].image="'$REPOSITORY_URI:$IMAGE_TAG'"' taskdef.json > taskdef-updated.json
+      - mv taskdef-updated.json taskdef.json
+      - echo Writing appspec file...
+      - >
+        echo '{
+          "version": 0.0,
+          "Resources": [
+            {
+              "TargetService": {
+                "Type": "AWS::ECS::Service",
+                "Properties": {
+                  "TaskDefinition": "<TASK_DEFINITION>",
+                  "LoadBalancerInfo": {
+                    "ContainerName": "WildRydesContainer",
+                    "ContainerPort": 5000
+                  },
+                  "PlatformVersion": "LATEST"
+                }
+              }
+            }
+          ]
+        }' > appspec.yaml
+      - echo Build completed
 
 artifacts:
   files:
-    - imageDefinition.json
-    - taskdef.json
     - appspec.yaml
+    - taskdef.json
+    - imageDefinitions.json
+  discard-paths: yes
